@@ -102,12 +102,5 @@ Open [http://localhost:8000/docs](http://localhost:8000/docs) to test APIs with 
 
 ---
 
-## ✅ Submit
-
-- ✅ GitHub repo link
-- ✅ Hugging Face Spaces app link
-- ✅ README with setup + model + API docs
-
----
 
 Built with ❤️ for modern multilingual analysis.

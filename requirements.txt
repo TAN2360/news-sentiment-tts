@@ -1,0 +1,17 @@
+beautifulsoup4
+requests
+nltk
+transformers
+torch
+gtts
+fastapi
+uvicorn
+streamlit
+gradio
+pandas
+matplotlib
+fpdf
+sentencepiece
+spacy
+keybert
+altair

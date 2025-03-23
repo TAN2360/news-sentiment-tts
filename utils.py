@@ -1,15 +1,34 @@
 import requests
 import torch
 import spacy
+import subprocess
 from collections import Counter
 from transformers import BertTokenizer, BertForSequenceClassification
 from nltk.sentiment import SentimentIntensityAnalyzer
 from keybert import KeyBERT
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
+import os
+import nltk
+nltk_data_path = os.path.join(os.getcwd(), "nltk_data")
+os.makedirs(nltk_data_path, exist_ok=True)
+# Set the data path so Hugging Face knows where to load from
+nltk.data.path.append(nltk_data_path)
+try:
+    nltk.data.find("sentiment/vader_lexicon.zip")
+except LookupError:
+    nltk.download("vader_lexicon")
+
 
 # Load Enhanced NLP Models
-nlp = spacy.load("en_core_web_trf")  # Transformer-based model for better accuracy
+def get_spacy_model():
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError:
+        import subprocess
+        subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+        return spacy.load("en_core_web_sm")
+
 kw_model = KeyBERT()
 
 # Load FinBERT tokenizer & model
@@ -55,28 +74,20 @@ def get_sentiment_finbert(text):
 
     return sentiment
 
-def extract_focus_topics(text):
-    """Extract key topics using refined NER and KeyBERT."""
-    if not text.strip():
-        return ["No Key Topics Found"]
-    
-    doc = nlp(text)
-    
-    # Extract named entities (focus on important categories)
-    entities = [ent.text for ent in doc.ents if ent.label_ in ["ORG", "GPE", "PRODUCT", "EVENT", "LAW"]]
+def extract_focus_topics(articles):
+    from keybert import KeyBERT
+    kw_model = KeyBERT()
+    nlp = get_spacy_model()
 
-    # Extract KeyBERT keywords (boosts relevance)
-    keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(1, 2), stop_words="english", top_n=7)
-    keyword_list = [kw[0] for kw in keywords]
+    for article in articles:
+        doc = nlp(article["summary"])
+        # Extract topics
+        entities = [ent.text for ent in doc.ents if ent.label_ in ["ORG", "PRODUCT", "PERSON", "EVENT"]]
+        keywords = kw_model.extract_keywords(article["summary"], stop_words="english", top_n=3)
+        keyword_list = [kw[0] for kw in keywords]
+        article["focus_topics"] = list(set(entities + keyword_list))
 
-    # Merge entities and keywords, ensuring diversity
-    topics = list(set(entities + keyword_list))
-
-    # Remove irrelevant words
-    blacklist_words = {"news", "article", "company", "business", "industry", "report", "source"}
-    filtered_topics = [topic for topic in topics if topic.lower() not in blacklist_words][:3]  # Keep top 3
-
-    return filtered_topics if filtered_topics else ["No Key Topics Found"]
+    return articles
 
 def analyze_topic_overlap(articles):
     """Analyze common and unique topics across articles."""
@@ -148,60 +159,47 @@ def generate_final_sentiment_analysis(sentiment_summary, company_name=None):
 
     return base + extra
 
-
 def scrape_news(company_name, num_articles=10):
-    """Fetch news articles, analyze sentiment, and extract topics."""
-    num_articles = max(10, min(num_articles, 50))  # Limit between 10 and 50
-
+    num_articles = max(10, min(num_articles, 50))
     url = f"https://newsapi.org/v2/everything?q={company_name}&language=en&sortBy=publishedAt&pageSize={num_articles}&apiKey={NEWS_API_KEY}"
     response = requests.get(url)
 
     if response.status_code != 200:
-        return {"error": f"Failed to fetch news. Status Code: {response.status_code}, Response: {response.text}"}
-    
-    articles = response.json().get("articles", [])
-    
-    if not articles:
+        return {"error": f"Failed to fetch news. Status Code: {response.status_code}"}
+
+    raw_articles = response.json().get("articles", [])
+    if not raw_articles:
         return {"error": "No articles found for the given company."}
 
     news_list = []
     sentiment_counts = Counter()
-    all_focus_topics = []
 
-    for article in articles:
+    # ✅ Build the news_list first
+    for article in raw_articles:
         title = article.get("title", "No Title")
         summary = (article.get("description") or "").strip() or "No Summary"
-
-        # Use FinBERT for sentiment analysis
         sentiment = get_sentiment_finbert(summary) if summary != "No Summary" else "Neutral"
-        sentiment_counts[sentiment] += 1  # Count sentiment occurrences
-
-        # Extract Focus Topics
-        focus_topics = extract_focus_topics(summary)
-        all_focus_topics.extend(focus_topics)
-
         news_list.append({
             "title": title,
             "summary": summary,
             "sentiment": sentiment,
-            "focus_topics": focus_topics
+            "focus_topics": []  # Fill later
         })
+        sentiment_counts[sentiment] += 1
 
-    # Analyze topic overlap
+    # ✅ Now safely extract topics
+    news_list = extract_focus_topics(news_list)
+
+    # Continue with the rest...
     topic_analysis = analyze_topic_overlap(news_list)
-
-    # Generate coverage differences
     coverage_differences = compare_articles(news_list)
-
-    # Generate final sentiment conclusion
-    final_sentiment_analysis = generate_final_sentiment_analysis({
+    final_sentiment = generate_final_sentiment_analysis({
         "Positive": sentiment_counts["Positive"],
         "Negative": sentiment_counts["Negative"],
         "Neutral": sentiment_counts["Neutral"],
         "Total Articles": num_articles
-    }, company_name=company_name)
+    }, company_name)
 
-    # Generate sentiment summary
     sentiment_summary = {
         "Positive": sentiment_counts["Positive"],
         "Negative": sentiment_counts["Negative"],
@@ -209,7 +207,7 @@ def scrape_news(company_name, num_articles=10):
         "Total Articles": num_articles,
         "Topic Overlap": topic_analysis,
         "Coverage Differences": coverage_differences,
-        "Final Sentiment Analysis": final_sentiment_analysis
+        "Final Sentiment Analysis": final_sentiment
     }
 
     return {"articles": news_list, "sentiment_summary": sentiment_summary}
